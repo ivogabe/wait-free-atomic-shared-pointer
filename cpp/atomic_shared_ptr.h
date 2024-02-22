@@ -19,14 +19,14 @@ template<class T>
 class atomic_shared_ptr;
 
 template<class T>
-struct control_block {
+struct ptr_control_block {
   friend class ::atomic_shared_ptr<T>;
   private:
     std::atomic<uint64_t> reference_count;
     T *ptr;
 
   public:
-    control_block(uint64_t rc, T *ptr): reference_count(rc), ptr(ptr) {}
+    ptr_control_block(uint64_t rc, T *ptr): reference_count(rc), ptr(ptr) {}
 
     inline void rc_increment(uint64_t count) {
       uint64_t rc = this->reference_count.fetch_add(count, std::memory_order::memory_order_acquire);
@@ -65,7 +65,7 @@ template<class T>
 struct shared_ptr {
   friend class ::atomic_shared_ptr<T>;
   private:
-    control_block<T> *control_block;
+    ptr_control_block<T> *control_block;
     T *ptr;
 
     void drop() {
@@ -78,7 +78,7 @@ struct shared_ptr {
       this->ptr = nullptr;
     }
 
-    shared_ptr(::control_block<T> *control_block, T *ptr) {
+    shared_ptr(::ptr_control_block<T> *control_block, T *ptr) {
       this->control_block = control_block;
       this->ptr = ptr;
     }
@@ -87,7 +87,7 @@ struct shared_ptr {
     shared_ptr(): ptr(nullptr), control_block(nullptr) {}
     shared_ptr(T *ptr) {
       this->ptr = ptr;
-      this->control_block = new ::control_block<T>(1, ptr);
+      this->control_block = new ::ptr_control_block<T>(1, ptr);
     }
     shared_ptr(const shared_ptr &other) {
       // Copy constructor (.clone() in Rust)
@@ -143,9 +143,9 @@ struct shared_ptr {
 };
 
 template<class T>
-control_block<T>* unpack_ptr(size_t tagged_pointer) {
+ptr_control_block<T>* unpack_ptr(size_t tagged_pointer) {
   size_t ptr = (((ptrdiff_t) (tagged_pointer << TAG_BITS)) >> FREE_BITS_MOST_SIGNIFICANT);
-  return (control_block<T>*) ptr;
+  return (ptr_control_block<T>*) ptr;
 }
 
 inline uint64_t unpack_tag(size_t tagged_pointer) {
@@ -154,7 +154,7 @@ inline uint64_t unpack_tag(size_t tagged_pointer) {
 }
 
 template<class T>
-size_t pack(control_block<T>* ptr, uint64_t tag) {
+size_t pack(ptr_control_block<T>* ptr, uint64_t tag) {
   if (tag > MAX_LOCAL_REFCOUNT) {
     printf("Tag is too large\n");
     abort();
@@ -172,7 +172,7 @@ inline size_t pack_tag(uint64_t tag) {
 
 template<class T>
 void release(size_t tagged_pointer) {
-  control_block<T> *control_block = unpack_ptr<T>(tagged_pointer);
+  ptr_control_block<T> *control_block = unpack_ptr<T>(tagged_pointer);
   if (control_block == nullptr) return;
   uint64_t tag = unpack_tag(tagged_pointer);
   control_block->rc_decrement(COMBINED_COUNT - tag);
@@ -202,7 +202,7 @@ struct atomic_shared_ptr {
   private:
     std::atomic<size_t> tagged_pointer;
 
-    void shift_references(::control_block<T> *control_block, uint64_t tag) {
+    void shift_references(::ptr_control_block<T> *control_block, uint64_t tag) {
       printf("shift references\n");
       // Move 'tag' references from the atomic_shared_ptr to the control_block.
       control_block->rc_increment(tag);
@@ -266,7 +266,7 @@ struct atomic_shared_ptr {
 
     shared_ptr<T> load(std::memory_order order = std::memory_order::memory_order_seq_cst) {
       size_t result = this->tagged_pointer.fetch_add(pack_tag(1), order);
-      control_block<T> *control_block = unpack_ptr<T>(result);
+      ptr_control_block<T> *control_block = unpack_ptr<T>(result);
       if (control_block == nullptr) return nullptr;
       uint64_t tag = unpack_tag(result);
       if (tag >= DANGER_ZONE) {
@@ -277,7 +277,7 @@ struct atomic_shared_ptr {
     }
 
     void store(shared_ptr<T> shared_pointer, std::memory_order order = std::memory_order::memory_order_seq_cst) {
-      control_block<T> *control_block = shared_pointer.control_block;
+      ptr_control_block<T> *control_block = shared_pointer.control_block;
       shared_pointer.forget();
       if (control_block != nullptr) {
         // `- 1` as we 'use' the existing reference of shared_pointer.
@@ -293,7 +293,7 @@ struct atomic_shared_ptr {
     bool compare_and_set(shared_ptr<T> expected, shared_ptr<T> new_ptr,
         std::memory_order success_order = std::memory_order_seq_cst,
         std::memory_order failure_order = std::memory_order_seq_cst) {
-      control_block<T> *new_cb = new_ptr.control_block;
+      ptr_control_block<T> *new_cb = new_ptr.control_block;
       if (new_cb != nullptr) {
         // '- 1' as we consume the reference of the shared_ptr
         new_cb->rc_increment(COMBINED_COUNT - 1);
@@ -302,7 +302,7 @@ struct atomic_shared_ptr {
 
       size_t observed = this->tagged_pointer.load(memory_order_max(memory_order_load(success_order), failure_order));
       while (true) {
-        control_block<T> *observed_cb = unpack_ptr<T>(observed);
+        ptr_control_block<T> *observed_cb = unpack_ptr<T>(observed);
         if (observed_cb != expected.control_block) {
           // Revert change to reference count of 'new'
           if (new_cb != nullptr) {
