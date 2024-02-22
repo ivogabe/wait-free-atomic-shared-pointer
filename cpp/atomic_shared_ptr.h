@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstddef>
+#include <cstdlib>
 
 #define FREE_BITS_MOST_SIGNIFICANT 16
 #define FREE_BITS_LEAST_SIGNIFICANT 3
