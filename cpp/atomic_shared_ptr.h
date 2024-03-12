@@ -143,6 +143,12 @@ struct shared_ptr {
     T* operator->() const {
       return this->ptr;
     }
+
+    template<typename... Args>
+    static shared_ptr make_shared(Args &&... args) {
+      auto ptr = new ptr_control_block<T>(std::forward<Args>(args)...);
+      return shared_ptr(ptr);
+    }
 };
 
 template<class T>
