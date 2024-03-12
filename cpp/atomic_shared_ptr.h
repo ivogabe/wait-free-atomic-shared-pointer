@@ -68,8 +68,8 @@ template<class T>
 struct shared_ptr {
   friend class ivo::atomic_shared_ptr<T>;
   private:
-    ptr_control_block<T> *control_block;
     T *ptr;
+    ptr_control_block<T> *control_block;
 
     void drop() {
       if (this->control_block != nullptr) {
@@ -146,9 +146,11 @@ struct shared_ptr {
 
     template<typename... Args>
     static shared_ptr make_shared(Args &&... args) {
-      auto ptr = new ptr_control_block<T>(std::forward<Args>(args)...);
+      auto ptr = new T(std::forward<Args>(args)...);
       return shared_ptr(ptr);
     }
+
+    explicit operator bool() const { return get() != nullptr; }
 };
 
 template<class T>
