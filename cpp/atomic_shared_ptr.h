@@ -29,17 +29,17 @@ struct ptr_control_block {
     ptr_control_block(uint64_t rc, T *ptr): reference_count(rc), ptr(ptr) {}
 
     inline void rc_increment(uint64_t count) {
-      uint64_t rc = this->reference_count.fetch_add(count, std::memory_order::acquire);
+      uint64_t rc = this->reference_count.fetch_add(count, std::memory_order_acquire);
       if (rc + count > MAX_REFCOUNT) {
         printf("Reference count overflow\n");
         abort();
       }
     }
     inline void rc_decrement(uint64_t count) {
-      uint64_t rc = this->reference_count.fetch_sub(count, std::memory_order::release);
+      uint64_t rc = this->reference_count.fetch_sub(count, std::memory_order_release);
       if (rc == count) {
         // Load as an acquire memory barrier
-        this->reference_count.load(std::memory_order::acquire);
+        this->reference_count.load(std::memory_order_acquire);
         delete this->ptr;
         delete this;
       } else if (rc < count) {
@@ -50,7 +50,7 @@ struct ptr_control_block {
 
     // Decrements a reference count, with the assumption that the reference count remains positive
     inline void rc_decrement_live(uint64_t count) {
-      uint64_t rc = this->reference_count.fetch_sub(count, std::memory_order::release);
+      uint64_t rc = this->reference_count.fetch_sub(count, std::memory_order_release);
       if (rc == count) {
         printf("Reference count is zero while object is still live\n");
         abort();
@@ -179,11 +179,11 @@ void release(size_t tagged_pointer) {
 }
 
 inline std::memory_order memory_order_load(std::memory_order order) {
-  if (order == std::memory_order::release) {
-    return std::memory_order::relaxed;
+  if (order == std::memory_order_release) {
+    return std::memory_order_relaxed;
   }
-  if (order == std::memory_order::acq_rel) {
-    return std::memory_order::acquire;
+  if (order == std::memory_order_acq_rel) {
+    return std::memory_order_acquire;
   }
   return order;
 }
@@ -215,7 +215,7 @@ struct atomic_shared_ptr {
       while (true) {
         size_t expected = pack<T>(control_block, current_tag);
         size_t new_value = pack<T>(control_block, current_tag - tag);
-        if (this->tagged_pointer.compare_exchange_strong(expected, new_value, std::memory_order::relaxed, std::memory_order::relaxed)) {
+        if (this->tagged_pointer.compare_exchange_strong(expected, new_value, std::memory_order_relaxed, std::memory_order_relaxed)) {
           // Success!
           return;
         }
@@ -260,11 +260,11 @@ struct atomic_shared_ptr {
     }
 
     ~atomic_shared_ptr() {
-      size_t tagged_pointer = this->tagged_pointer.load(std::memory_order::relaxed);
+      size_t tagged_pointer = this->tagged_pointer.load(std::memory_order_relaxed);
       release<T>(tagged_pointer);
     }
 
-    shared_ptr<T> load(std::memory_order order = std::memory_order::seq_cst) {
+    shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) {
       size_t result = this->tagged_pointer.fetch_add(pack_tag(1), order);
       ptr_control_block<T> *control_block = unpack_ptr<T>(result);
       if (control_block == nullptr) return nullptr;
@@ -276,7 +276,7 @@ struct atomic_shared_ptr {
       return shared_ptr<T>(control_block, control_block->ptr);
     }
 
-    void store(shared_ptr<T> shared_pointer, std::memory_order order = std::memory_order::seq_cst) {
+    void store(shared_ptr<T> shared_pointer, std::memory_order order = std::memory_order_seq_cst) {
       ptr_control_block<T> *control_block = shared_pointer.control_block;
       shared_pointer.forget();
       if (control_block != nullptr) {
