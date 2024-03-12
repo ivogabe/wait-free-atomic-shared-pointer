@@ -1,5 +1,7 @@
 #include "atomic_shared_ptr.h"
 
+using namespace ivo;
+
 struct LogDrop {
   public:
     int value;
@@ -36,4 +38,3 @@ int main() {
 
   return 0;
 }
-

@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdlib>
 
+namespace ivo
+{
+
 #define FREE_BITS_MOST_SIGNIFICANT 16
 #define FREE_BITS_LEAST_SIGNIFICANT 3
 #define TAG_BITS (FREE_BITS_MOST_SIGNIFICANT + FREE_BITS_LEAST_SIGNIFICANT)
@@ -20,7 +23,7 @@ class atomic_shared_ptr;
 
 template<class T>
 struct ptr_control_block {
-  friend class ::atomic_shared_ptr<T>;
+  friend class ivo::atomic_shared_ptr<T>;
   private:
     std::atomic<uint64_t> reference_count;
     T *ptr;
@@ -63,7 +66,7 @@ struct ptr_control_block {
 
 template<class T>
 struct shared_ptr {
-  friend class ::atomic_shared_ptr<T>;
+  friend class ivo::atomic_shared_ptr<T>;
   private:
     ptr_control_block<T> *control_block;
     T *ptr;
@@ -78,7 +81,7 @@ struct shared_ptr {
       this->ptr = nullptr;
     }
 
-    shared_ptr(::ptr_control_block<T> *control_block, T *ptr) {
+    shared_ptr(ivo::ptr_control_block<T> *control_block, T *ptr) {
       this->control_block = control_block;
       this->ptr = ptr;
     }
@@ -87,7 +90,7 @@ struct shared_ptr {
     shared_ptr(): ptr(nullptr), control_block(nullptr) {}
     shared_ptr(T *ptr) {
       this->ptr = ptr;
-      this->control_block = new ::ptr_control_block<T>(1, ptr);
+      this->control_block = new ivo::ptr_control_block<T>(1, ptr);
     }
     shared_ptr(const shared_ptr &other) {
       // Copy constructor (.clone() in Rust)
@@ -202,7 +205,7 @@ struct atomic_shared_ptr {
   private:
     std::atomic<size_t> tagged_pointer;
 
-    void shift_references(::ptr_control_block<T> *control_block, uint64_t tag) {
+    void shift_references(ivo::ptr_control_block<T> *control_block, uint64_t tag) {
       printf("shift references\n");
       // Move 'tag' references from the atomic_shared_ptr to the control_block.
       control_block->rc_increment(tag);
@@ -356,3 +359,5 @@ struct atomic_shared_ptr {
     atomic_shared_ptr(atomic_shared_ptr const&) = delete;
     atomic_shared_ptr& operator=(atomic_shared_ptr const&) = delete;
 };
+
+}
