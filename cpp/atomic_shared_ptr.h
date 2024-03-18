@@ -221,6 +221,7 @@ struct atomic_shared_ptr {
     std::atomic<size_t> value;
 
     void increase_weight(ivo::ptr_control_block<T> *control_block, uint64_t weight) {
+      // Assumes control_block != nullptr
       // Increase reference count by 'MAX_WEIGHT - weight', and then attempt to increase weight by 'MAX_WEIGHT - weight'.
       control_block->rc_increment(MAX_WEIGHT - weight);
 
@@ -270,7 +271,9 @@ struct atomic_shared_ptr {
     atomic_shared_ptr(): value(0) {}
     atomic_shared_ptr(shared_ptr<T> shared_pointer) {
       // `- 1` as we 'use' the existing reference of shared_pointer.
-      shared_pointer.control_block->rc_increment(MAX_WEIGHT - 1);
+      if (shared_pointer.control_block != nullptr) {
+        shared_pointer.control_block->rc_increment(MAX_WEIGHT - 1);
+      }
       this->value = pack<T>(shared_pointer.control_block, MAX_WEIGHT);
 
       shared_pointer.forget();
