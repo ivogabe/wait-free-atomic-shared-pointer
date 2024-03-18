@@ -10,12 +10,12 @@ namespace ivo
 #define FREE_BITS_MOST_SIGNIFICANT 16
 #define FREE_BITS_LEAST_SIGNIFICANT 3
 #define TAG_BITS (FREE_BITS_MOST_SIGNIFICANT + FREE_BITS_LEAST_SIGNIFICANT)
-#define MAX_LOCAL_REFCOUNT ((1UL << TAG_BITS) - 1)
 
+// Constant 'P'
 #define MAX_THREADS (1 << 16)
 
-#define COMBINED_COUNT (MAX_LOCAL_REFCOUNT + 1)
-#define DANGER_ZONE (MAX_LOCAL_REFCOUNT - MAX_THREADS)
+// Constant 'C'
+#define MAX_WEIGHT ((1UL << TAG_BITS) - 1)
 
 #define MAX_REFCOUNT ((1UL<<63) - 1)
 
@@ -93,7 +93,11 @@ struct shared_ptr {
     shared_ptr(T *ptr) {
       assert(ptr != nullptr);
       this->ptr = ptr;
-      this->control_block = new ivo::ptr_control_block<T>(1, ptr);
+      if (ptr == nullptr) {
+        this->control_block = nullptr;
+      } else {
+        this->control_block = new ivo::ptr_control_block<T>(1, ptr);
+      }
     }
     shared_ptr(const shared_ptr &other) {
       // Copy constructor (.clone() in Rust)
@@ -157,39 +161,39 @@ struct shared_ptr {
 };
 
 template<class T>
-ptr_control_block<T>* unpack_ptr(size_t tagged_pointer) {
-  size_t ptr = (((ptrdiff_t) (tagged_pointer << TAG_BITS)) >> FREE_BITS_MOST_SIGNIFICANT);
+ptr_control_block<T>* unpack_ptr(size_t value) {
+  size_t ptr = (((ptrdiff_t) (value << TAG_BITS)) >> FREE_BITS_MOST_SIGNIFICANT);
   return (ptr_control_block<T>*) ptr;
 }
 
-inline uint64_t unpack_tag(size_t tagged_pointer) {
+inline uint64_t unpack_weight(size_t value) {
   size_t bits = sizeof(size_t) * 8;
-  return tagged_pointer >> (bits - TAG_BITS);
+  return value >> (bits - TAG_BITS);
 }
 
 template<class T>
-size_t pack(ptr_control_block<T>* ptr, uint64_t tag) {
-  if (tag > MAX_LOCAL_REFCOUNT) {
-    printf("Tag is too large\n");
+size_t pack(ptr_control_block<T>* ptr, uint64_t weight) {
+  if (weight > MAX_WEIGHT) {
+    printf("Weight is too large\n");
     abort();
   }
   size_t bits = sizeof(size_t) * 8;
   size_t ptr_mask = (1UL << (bits - FREE_BITS_MOST_SIGNIFICANT)) - 1;
   return (((size_t) ptr & ptr_mask) >> FREE_BITS_LEAST_SIGNIFICANT)
-    | (tag << (bits - TAG_BITS));
+    | (weight << (bits - TAG_BITS));
 }
 
-inline size_t pack_tag(uint64_t tag) {
+inline size_t pack_weight(uint64_t weight) {
   size_t bits = sizeof(size_t) * 8;
-  return tag << (bits - TAG_BITS);
+  return weight << (bits - TAG_BITS);
 }
 
 template<class T>
-void release(size_t tagged_pointer) {
-  ptr_control_block<T> *control_block = unpack_ptr<T>(tagged_pointer);
+void release(size_t value) {
+  ptr_control_block<T> *control_block = unpack_ptr<T>(value);
   if (control_block == nullptr) return;
-  uint64_t tag = unpack_tag(tagged_pointer);
-  control_block->rc_decrement(COMBINED_COUNT - tag);
+  uint64_t weight = unpack_weight(value);
+  control_block->rc_decrement(weight);
 }
 
 inline std::memory_order memory_order_load(std::memory_order order) {
@@ -214,77 +218,77 @@ inline std::memory_order memory_order_max(std::memory_order order1, std::memory_
 template<class T>
 struct atomic_shared_ptr {
   private:
-    std::atomic<size_t> tagged_pointer;
+    std::atomic<size_t> value;
 
-    void shift_references(ivo::ptr_control_block<T> *control_block, uint64_t tag) {
-      // Move 'tag' references from the atomic_shared_ptr to the control_block.
-      control_block->rc_increment(tag);
+    void increase_weight(ivo::ptr_control_block<T> *control_block, uint64_t weight) {
+      // Increase reference count by 'MAX_WEIGHT - weight', and then attempt to increase weight by 'MAX_WEIGHT - weight'.
+      control_block->rc_increment(MAX_WEIGHT - weight);
 
-      // cas-loop to update the tagged pointer.
+      // cas-loop to update the value in the atomic shared pointer.
       // Note that we use a strong cas (opposed to a weak cas), to make this wait-free.
       // We could as an optimistic optimisation start with weak cas, and after X spurious fails switch to strong cas.
 
-      uint64_t current_tag = tag;
+      uint64_t current_weight = weight;
       while (true) {
-        size_t expected = pack<T>(control_block, current_tag);
-        size_t new_value = pack<T>(control_block, current_tag - tag);
-        if (this->tagged_pointer.compare_exchange_strong(expected, new_value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+        size_t expected = pack<T>(control_block, current_weight);
+        size_t new_value = pack<T>(control_block, current_weight + MAX_WEIGHT - weight);
+        if (this->value.compare_exchange_strong(expected, new_value, std::memory_order_relaxed, std::memory_order_relaxed)) {
           // Success!
           return;
         }
-        // CAS failed, as the pointer or tag has changed
+        // CAS failed, as the pointer or weight has changed
         if (unpack_ptr<T>(expected) != control_block) {
           // The atomic_shared_ptr now refers to a different object.
-          // This makes this attempt to move references redundant.
+          // This makes this attempt to increase the weight redundant.
           break;
         }
-        uint64_t new_tag = unpack_tag(expected);
-        if (new_tag < current_tag) {
-          // The tag was already lowered by another thread.
-          // No need for this thread to lower the tag.
+        uint64_t new_weight = unpack_weight(expected);
+        if (new_weight > current_weight) {
+          // The weight was already incremented by another thread.
+          // No need for this thread to increment the weight.
           break;
         }
-        if (new_tag == current_tag) {
+        if (new_weight == current_weight) {
           printf("Spurious fails should be impossible with strong compare_exchange\n");
           abort();
         }
-        current_tag = new_tag;
+        current_weight = new_weight;
       }
 
       // CAS didn't succeed, because either
       // 1. Another thread changed the pointer.
-      // 2. Another thread lowered the tag.
-      // In both cases the tag is (or has been) below DANGER_ZONE,
-      // hence we don't need to decrement it.
+      // 2. Another thread incremented the weight.
+      // In both cases the weight is (or has been) above MAX_THREADS,
+      // hence this thread doesn't need to increase it.
 
       // Revert the change of the reference_count.
       // Note that this will not lower the reference count to 0,
       // as this thread still holds a reference to the object.
-      control_block->rc_decrement_live(tag);
+      control_block->rc_decrement_live(MAX_WEIGHT - weight);
     }
   public:
-    atomic_shared_ptr(): tagged_pointer(0) {}
+    atomic_shared_ptr(): value(0) {}
     atomic_shared_ptr(shared_ptr<T> shared_pointer) {
       // `- 1` as we 'use' the existing reference of shared_pointer.
-      shared_pointer.control_block->rc_increment(COMBINED_COUNT - 1);
-      this->tagged_pointer = pack<T>(shared_pointer.control_block, 0);
+      shared_pointer.control_block->rc_increment(MAX_WEIGHT - 1);
+      this->value = pack<T>(shared_pointer.control_block, MAX_WEIGHT);
 
       shared_pointer.forget();
     }
 
     ~atomic_shared_ptr() {
-      size_t tagged_pointer = this->tagged_pointer.load(std::memory_order_relaxed);
-      release<T>(tagged_pointer);
+      size_t value = this->value.load(std::memory_order_relaxed);
+      release<T>(value);
     }
 
     shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) {
-      size_t result = this->tagged_pointer.fetch_add(pack_tag(1), order);
+      size_t result = this->value.fetch_sub(pack_weight(1), order);
       ptr_control_block<T> *control_block = unpack_ptr<T>(result);
       if (control_block == nullptr) return shared_ptr<T>(nullptr, nullptr);
-      uint64_t tag = unpack_tag(result);
-      if (tag >= DANGER_ZONE) {
-        // 'tag + 1' as fetch_add returns the value *before* the increment
-        this->shift_references(control_block, tag + 1);
+      uint64_t weight = unpack_weight(result);
+      if (weight - 1 < MAX_THREADS) {
+        // 'weight - 1' as fetch_sub returns the value *before* the increment
+        this->increase_weight(control_block, weight - 1);
       }
       return shared_ptr<T>(control_block, control_block->ptr);
     }
@@ -294,9 +298,9 @@ struct atomic_shared_ptr {
       shared_pointer.forget();
       if (control_block != nullptr) {
         // `- 1` as we 'use' the existing reference of shared_pointer.
-        control_block->rc_increment(COMBINED_COUNT - 1);
+        control_block->rc_increment(MAX_WEIGHT - 1);
       }
-      size_t old = this->tagged_pointer.exchange(pack<T>(control_block, 0), order);
+      size_t old = this->value.exchange(pack<T>(control_block, MAX_WEIGHT), order);
       release<T>(old);
     }
 
@@ -309,21 +313,21 @@ struct atomic_shared_ptr {
       ptr_control_block<T> *new_cb = new_ptr.control_block;
       if (new_cb != nullptr) {
         // '- 1' as we consume the reference of the shared_ptr
-        new_cb->rc_increment(COMBINED_COUNT - 1);
+        new_cb->rc_increment(MAX_WEIGHT - 1);
       }
       new_ptr.forget();
 
-      size_t observed = this->tagged_pointer.load(memory_order_max(memory_order_load(success_order), failure_order));
+      size_t observed = this->value.load(memory_order_max(memory_order_load(success_order), failure_order));
       while (true) {
         ptr_control_block<T> *observed_cb = unpack_ptr<T>(observed);
         if (observed_cb != expected.control_block) {
-          // Revert change to reference count of 'new'
+          // Revert change to reference count of 'new_ptr'
           if (new_cb != nullptr) {
-            new_cb->rc_decrement(COMBINED_COUNT);
+            new_cb->rc_decrement(MAX_WEIGHT);
           }
           return false;
         }
-        if (this->tagged_pointer.compare_exchange_weak(observed, pack<T>(new_cb, 0), success_order, failure_order)) {
+        if (this->value.compare_exchange_weak(observed, pack<T>(new_cb, MAX_WEIGHT), success_order, failure_order)) {
           release<T>(observed);
           return true;
         }
