@@ -214,7 +214,6 @@ struct atomic_shared_ptr {
     std::atomic<size_t> tagged_pointer;
 
     void shift_references(ivo::ptr_control_block<T> *control_block, uint64_t tag) {
-      printf("shift references\n");
       // Move 'tag' references from the atomic_shared_ptr to the control_block.
       control_block->rc_increment(tag);
 
@@ -278,7 +277,7 @@ struct atomic_shared_ptr {
     shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) {
       size_t result = this->tagged_pointer.fetch_add(pack_tag(1), order);
       ptr_control_block<T> *control_block = unpack_ptr<T>(result);
-      if (control_block == nullptr) return nullptr;
+      if (control_block == nullptr) return shared_ptr<T>(nullptr, nullptr);
       uint64_t tag = unpack_tag(result);
       if (tag >= DANGER_ZONE) {
         // 'tag + 1' as fetch_add returns the value *before* the increment
@@ -326,7 +325,6 @@ struct atomic_shared_ptr {
           return true;
         }
       }
-      return false;
     }
 
     bool compare_exchange_weak(shared_ptr<T> &expected, shared_ptr<T> new_ptr,
