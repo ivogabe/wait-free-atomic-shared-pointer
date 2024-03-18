@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
+#include <cassert>
 
 namespace ivo
 {
@@ -88,7 +89,9 @@ struct shared_ptr {
 
   public:
     shared_ptr(): ptr(nullptr), control_block(nullptr) {}
+    shared_ptr(nullptr_t): ptr(nullptr), control_block(nullptr) {}
     shared_ptr(T *ptr) {
+      assert(ptr != nullptr);
       this->ptr = ptr;
       this->control_block = new ivo::ptr_control_block<T>(1, ptr);
     }
