@@ -1,6 +1,6 @@
 #include "atomic_shared_ptr.h"
 
-using namespace ivo;
+using namespace ivogabe;
 
 struct LogDrop {
   public:
