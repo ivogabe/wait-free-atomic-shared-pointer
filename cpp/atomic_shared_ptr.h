@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdlib>
 
-namespace ivo
+namespace ivogabe
 {
 
 #define FREE_BITS_MOST_SIGNIFICANT 16
@@ -23,7 +23,7 @@ class atomic_shared_ptr;
 
 template<class T>
 struct ptr_control_block {
-  friend class ivo::atomic_shared_ptr<T>;
+  friend class ivogabe::atomic_shared_ptr<T>;
   private:
     std::atomic<uint64_t> reference_count;
     T *ptr;
@@ -66,7 +66,7 @@ struct ptr_control_block {
 
 template<class T>
 struct shared_ptr {
-  friend class ivo::atomic_shared_ptr<T>;
+  friend class ivogabe::atomic_shared_ptr<T>;
   private:
     T *ptr;
     ptr_control_block<T> *control_block;
@@ -81,7 +81,7 @@ struct shared_ptr {
       this->ptr = nullptr;
     }
 
-    shared_ptr(ivo::ptr_control_block<T> *control_block, T *ptr) {
+    shared_ptr(ivogabe::ptr_control_block<T> *control_block, T *ptr) {
       this->control_block = control_block;
       this->ptr = ptr;
     }
@@ -94,7 +94,7 @@ struct shared_ptr {
       if (ptr == nullptr) {
         this->control_block = nullptr;
       } else {
-        this->control_block = new ivo::ptr_control_block<T>(1, ptr);
+        this->control_block = new ivogabe::ptr_control_block<T>(1, ptr);
       }
     }
     shared_ptr(const shared_ptr &other) {
@@ -218,7 +218,7 @@ struct atomic_shared_ptr {
   private:
     std::atomic<size_t> value;
 
-    void increase_weight(ivo::ptr_control_block<T> *control_block, uint64_t weight) {
+    void increase_weight(ivogabe::ptr_control_block<T> *control_block, uint64_t weight) {
       // Assumes control_block != nullptr
       // Increase reference count by 'MAX_WEIGHT - weight', and then attempt to increase weight by 'MAX_WEIGHT - weight'.
       control_block->rc_increment(MAX_WEIGHT - weight);
