@@ -5,7 +5,7 @@ use arc::*;
 
 fn main() {
   println!("1");
-  let a = AtomicOptionalArc::null(); // new(LogDrop{ value: 2903 });
+  let a = AtomicOptionalArc::new(LogDrop{ value: 2903 });
   let b = Arc::new(LogDrop{ value: 12345678 });
   println!("2");
   for i in 0 .. (1<<19) + (1<<18) {
@@ -15,10 +15,8 @@ fn main() {
     }
   }
   println!("3");
-  // drop(a);
-  println!("4");
   println!("cas {}",
-    a.compare_exchange(Some(&b), Some(&Arc::new(LogDrop { value: 20000 })))
+    a.compare_and_set(Some(&b), Some(&Arc::new(LogDrop { value: 20000 })))
   );
   a.store(Some(&Arc::new(LogDrop { value: 20001 })));
   a.store_consume(Some(Arc::new(LogDrop { value: 20002 })));
@@ -36,10 +34,9 @@ fn main() {
   println!("{:?}", queue.dequeue());
   println!("{:?}", queue.dequeue());
 
-  println!("4");
-  // Note that the queue itself doesn't have a proper Drop instance, so the remaining values on the queue are not dropped.
+  println!("6");
   drop(queue);
-  println!("5");
+  println!("7");
 }
 
 #[derive(Debug)]

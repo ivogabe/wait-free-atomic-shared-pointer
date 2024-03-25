@@ -12,8 +12,6 @@ struct Node<T> {
   next: AtomicOptionalArc<Node<T>>
 }
 
-// TODO: Drop instance for Queue, to drop some of the MaybeUninits.
-
 impl<T> Queue<T> {
   pub fn new() -> Queue<T> {
     let node = Arc::new(Node{ value: MaybeUninit::<T>::uninit(), next: AtomicOptionalArc::null() });
@@ -38,10 +36,10 @@ impl<T> Queue<T> {
           // Was tail pointing to the last node?
           None => {
             // Try to link node at the end of the linked list
-            if tail.next.compare_exchange(None, Some(&node)) {
+            if tail.next.compare_and_set(None, Some(&node)) {
               // Enqueue is done.
               // Try to swing Tail to the inserted node
-              self.tail.compare_exchange(&tail, &node);
+              self.tail.compare_and_set(&tail, &node);
               // Exit loop
               break;
             }
@@ -49,7 +47,7 @@ impl<T> Queue<T> {
           // Tail was not pointing to the last node
           Some(next_ptr) => {
             // Try to swing Tail to the next node
-            self.tail.compare_exchange(&tail, &next_ptr);
+            self.tail.compare_and_set(&tail, &next_ptr);
           }
         }
       }
@@ -66,14 +64,14 @@ impl<T> Queue<T> {
           match next {
             None => return None,
             Some(n) => {
-              self.tail.compare_exchange(&tail, &n);
+              self.tail.compare_and_set(&tail, &n);
             }
           }
         } else {
           match next {
             None => panic!("Corrupted queue"),
             Some(n) => {
-              if self.head.compare_exchange(&head, &n) {
+              if self.head.compare_and_set(&head, &n) {
                 return Some(unsafe { n.value.assume_init_read() });
               }
             }
@@ -81,5 +79,11 @@ impl<T> Queue<T> {
         }
       }
     }
+  }
+}
+
+impl<T> Drop for Queue<T> {
+  fn drop(&mut self) {
+    while self.dequeue().is_some() {}
   }
 }
