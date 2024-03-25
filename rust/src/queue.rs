@@ -4,17 +4,17 @@ use std::mem::MaybeUninit;
 use crate::arc::*;
 
 pub struct Queue<T> {
-  head: AtomicArc<Node<T>>,
-  tail: AtomicArc<Node<T>>
+  head: ArcCell<Node<T>>,
+  tail: ArcCell<Node<T>>
 }
 struct Node<T> {
   value: MaybeUninit<T>,
-  next: AtomicOptionalArc<Node<T>>
+  next: OptionalArcCell<Node<T>>
 }
 
 impl<T> Queue<T> {
   pub fn new() -> Queue<T> {
-    let node = Arc::new(Node{ value: MaybeUninit::<T>::uninit(), next: AtomicOptionalArc::null() });
+    let node = Arc::new(Node{ value: MaybeUninit::<T>::uninit(), next: OptionalArcCell::null() });
     Queue {
       head: node.as_atomic(),
       tail: node.into_atomic()
@@ -24,7 +24,7 @@ impl<T> Queue<T> {
   pub fn enqueue(&self, value: T) {
     let node = Arc::new(Node{
       value: MaybeUninit::new(value),
-      next: AtomicOptionalArc::null()
+      next: OptionalArcCell::null()
     });
     // Keep trying until Enqueue is done
     loop {

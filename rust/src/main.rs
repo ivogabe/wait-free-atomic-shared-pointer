@@ -5,7 +5,7 @@ use arc::*;
 
 fn main() {
   println!("1");
-  let a = AtomicOptionalArc::new(LogDrop{ value: 2903 });
+  let a = OptionalArcCell::new(LogDrop{ value: 2903 });
   let b = Arc::new(LogDrop{ value: 12345678 });
   println!("2");
   for i in 0 .. (1<<19) + (1<<18) {

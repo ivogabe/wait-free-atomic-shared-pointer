@@ -81,37 +81,37 @@ impl<T> Arc<T> {
     }
   }
 
-  pub fn into_atomic(self) -> AtomicArc<T> {
+  pub fn into_atomic(self) -> ArcCell<T> {
     ArcObject::rc_increment(self.pointer, MAX_WEIGHT - 1);
     let ptr = self.pointer.as_ptr();
     mem::forget(self);
-    AtomicArc(AtomicArcInternal{
+    ArcCell(ArcCellInternal{
       phantom: PhantomData,
       value: AtomicUsize::new(pack(ptr, MAX_WEIGHT))
     })
   }
 
-  pub fn as_atomic(&self) -> AtomicArc<T> {
+  pub fn as_atomic(&self) -> ArcCell<T> {
     ArcObject::rc_increment(self.pointer, MAX_WEIGHT);
-    AtomicArc(AtomicArcInternal {
+    ArcCell(ArcCellInternal {
       phantom: PhantomData,
       value: AtomicUsize::new(pack(self.pointer.as_ptr(), MAX_WEIGHT))
     })
   }
 
-  pub fn into_atomic_optional(self) -> AtomicOptionalArc<T> {
+  pub fn into_atomic_optional(self) -> OptionalArcCell<T> {
     ArcObject::rc_increment(self.pointer, MAX_WEIGHT - 1);
     let ptr = self.pointer.as_ptr();
     mem::forget(self);
-    AtomicOptionalArc(AtomicArcInternal{
+    OptionalArcCell(ArcCellInternal{
       phantom: PhantomData,
       value: AtomicUsize::new(pack(ptr, MAX_WEIGHT))
     })
   }
 
-  pub fn as_atomic_optional(&self) -> AtomicOptionalArc<T> {
+  pub fn as_atomic_optional(&self) -> OptionalArcCell<T> {
     ArcObject::rc_increment(self.pointer, MAX_WEIGHT);
-    AtomicOptionalArc(AtomicArcInternal {
+    OptionalArcCell(ArcCellInternal {
       phantom: PhantomData,
       value: AtomicUsize::new(pack(self.pointer.as_ptr(), MAX_WEIGHT))
     })
@@ -153,34 +153,34 @@ impl<T> Deref for Arc<T> {
   }
 }
 
-// AtomicArc contains a pointer and a weight. AtomicArc will
+// ArcCell contains a pointer and a weight. ArcCell will
 // 'reserve' MAX_WEIGHT references in ArcObject. It will hand out those
 // references, and decrement its weight each time.
-// When the AtomicArc is dropped, it subtracts its remaining weight from the
+// When the ArcCell is dropped, it subtracts its remaining weight from the
 // reference count of the object.
 // When the weight is less than MAX_THREADS, it will claim
 // more references in ArcInner to increase its weight.
-struct AtomicArcInternal<const NULLABLE: bool, T> {
+struct ArcCellInternal<const NULLABLE: bool, T> {
   phantom: PhantomData<*mut T>,
   value: AtomicUsize
 }
 
-impl<T> AtomicArcInternal<true, T> {
-  fn null() -> AtomicArcInternal<true, T> {
-    AtomicArcInternal{
+impl<T> ArcCellInternal<true, T> {
+  fn null() -> ArcCellInternal<true, T> {
+    ArcCellInternal{
       phantom: PhantomData,
       value: AtomicUsize::new(pack::<T>(std::ptr::null(), 0))
     }
   }
 }
 
-impl<const NULLABLE: bool, T> AtomicArcInternal<NULLABLE, T> {
-  fn new(value: T) -> AtomicArcInternal<NULLABLE, T> {
+impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
+  fn new(value: T) -> ArcCellInternal<NULLABLE, T> {
     let inner = Box::new(ArcObject{
       reference_count: AtomicUsize::new(MAX_WEIGHT),
       value
     });
-    AtomicArcInternal{
+    ArcCellInternal{
       phantom: PhantomData,
       value: AtomicUsize::new(pack(Box::into_raw(inner), MAX_WEIGHT))
     }
@@ -205,7 +205,7 @@ impl<const NULLABLE: bool, T> AtomicArcInternal<NULLABLE, T> {
     }
   }
 
-  // Returns the pointer stored in this AtomicArc, without incrementing the reference count.
+  // Returns the pointer stored in this ArcCell, without incrementing the reference count.
   // This thus doens't guarantee that the object it points to is still live
   // Wait-free, O(1)
   pub fn peek(&self) -> *const ArcObject<T> {
@@ -327,18 +327,18 @@ impl<const NULLABLE: bool, T> AtomicArcInternal<NULLABLE, T> {
   }
 }
 
-impl<const NULLABLE: bool, T> Drop for AtomicArcInternal<NULLABLE, T> {
+impl<const NULLABLE: bool, T> Drop for ArcCellInternal<NULLABLE, T> {
   fn drop(&mut self) {
     release::<NULLABLE, T>(self.value.load(Ordering::Relaxed));
   }
 }
 
-pub struct AtomicArc<T>(AtomicArcInternal<false, T>);
-pub struct AtomicOptionalArc<T>(AtomicArcInternal<true, T>);
+pub struct ArcCell<T>(ArcCellInternal<false, T>);
+pub struct OptionalArcCell<T>(ArcCellInternal<true, T>);
 
-impl<T> AtomicArc<T> {
-  pub fn new(value: T) -> AtomicArc<T> {
-    AtomicArc(AtomicArcInternal::new(value))
+impl<T> ArcCell<T> {
+  pub fn new(value: T) -> ArcCell<T> {
+    ArcCell(ArcCellInternal::new(value))
   }
   pub fn load(&self) -> Arc<T> {
     unsafe {
@@ -386,12 +386,12 @@ impl<T> AtomicArc<T> {
   }
 }
 
-impl<T> AtomicOptionalArc<T> {
-  pub fn new(value: T) -> AtomicOptionalArc<T> {
-    AtomicOptionalArc(AtomicArcInternal::new(value))
+impl<T> OptionalArcCell<T> {
+  pub fn new(value: T) -> OptionalArcCell<T> {
+    OptionalArcCell(ArcCellInternal::new(value))
   }
-  pub fn null() -> AtomicOptionalArc<T> {
-    AtomicOptionalArc(AtomicArcInternal::null())
+  pub fn null() -> OptionalArcCell<T> {
+    OptionalArcCell(ArcCellInternal::null())
   }
   pub fn load(&self) -> Option<Arc<T>> {
     self.0.load()
@@ -473,7 +473,7 @@ fn increase_weight<T>(value: &AtomicUsize, ptr: NonNull<ArcObject<T>>, weight: u
       Err(new_value) => {
         let (new_ptr, new_weight) = unpack::<T>(new_value);
         if new_ptr != ptr.as_ptr() {
-          // The AtomicArc now refers to a different pointer.
+          // The ArcCell now refers to a different pointer.
           // This makes this attempt to increase the weight redundant.
           break;
         }
