@@ -243,7 +243,7 @@ struct atomic_shared_ptr {
         }
         uint64_t new_weight = unpack_weight(expected);
         if (new_weight > current_weight) {
-          // The weight was already incremented by another thread.
+          // The weight was already increased by another thread.
           // No need for this thread to increment the weight.
           break;
         }
@@ -256,7 +256,7 @@ struct atomic_shared_ptr {
 
       // CAS didn't succeed, because either
       // 1. Another thread changed the pointer.
-      // 2. Another thread incremented the weight.
+      // 2. Another thread increased the weight.
       // In both cases the weight is (or has been) above MAX_THREADS,
       // hence this thread doesn't need to increase it.
 
