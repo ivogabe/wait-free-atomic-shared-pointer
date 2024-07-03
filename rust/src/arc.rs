@@ -23,6 +23,7 @@ pub struct ArcObject<T> {
 }
 
 impl<T> ArcObject<T> {
+  #[inline(always)]
   fn rc_increment(ptr: NonNull<ArcObject<T>>, count: usize) {
     let rc = unsafe { &(*ptr.as_ptr()).reference_count };
     if count == 0 { return; }
@@ -32,6 +33,7 @@ impl<T> ArcObject<T> {
     }
   }
 
+  #[inline(always)]
   fn rc_decrement(ptr: NonNull<ArcObject<T>>, count: usize) {
     let rc = unsafe { &(*ptr.as_ptr()).reference_count };
     if count == 0 { return; }
@@ -52,6 +54,7 @@ impl<T> ArcObject<T> {
   }
 
   // Decrements a reference count, with the assumption that the reference count remains positive
+  #[inline(always)]
   fn rc_decrement_live(ptr: NonNull<ArcObject<T>>, count: usize) {
     let rc = unsafe { &(*ptr.as_ptr()).reference_count }.fetch_sub(count, Ordering::Release);
     if rc < count {
@@ -69,6 +72,9 @@ impl<T> ArcObject<T> {
 pub struct Arc<T> {
   pointer: NonNull<ArcObject<T>>
 }
+
+unsafe impl<T: Send + Sync> Send for Arc<T> {}
+unsafe impl<T: Send + Sync> Sync for Arc<T> {}
 
 impl<T> Arc<T> {
   pub fn new(value: T) -> Arc<T> {
@@ -166,6 +172,7 @@ struct ArcCellInternal<const NULLABLE: bool, T> {
 }
 
 impl<T> ArcCellInternal<true, T> {
+  #[inline(always)]
   fn null() -> ArcCellInternal<true, T> {
     ArcCellInternal{
       phantom: PhantomData,
@@ -175,6 +182,7 @@ impl<T> ArcCellInternal<true, T> {
 }
 
 impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
+  #[inline(always)]
   fn new(value: T) -> ArcCellInternal<NULLABLE, T> {
     let inner = Box::new(ArcObject{
       reference_count: AtomicUsize::new(MAX_WEIGHT),
@@ -187,7 +195,8 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Wait-free, O(P) with P the number of threads
-  // O(1) if the weight remains less than DANGER_ZONE
+  // O(1) if the weight remains larger than MAX_THREADS
+  #[inline(always)]
   pub fn load(&self) -> Option<Arc<T>> {
     let result = self.value.fetch_sub(pack_weight(1), Ordering::Acquire);
     let (ptr, weight) = unpack::<T>(result);
@@ -208,11 +217,13 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   // Returns the pointer stored in this ArcCell, without incrementing the reference count.
   // This thus doens't guarantee that the object it points to is still live
   // Wait-free, O(1)
+  #[inline(always)]
   pub fn peek(&self) -> *const ArcObject<T> {
     unpack(self.value.load(Ordering::Acquire)).0
   }
 
   // Wait-free, O(1)
+  #[inline(always)]
   pub fn store_consume(&self, arc: Option<Arc<T>>) {
     let new =
       if let Some(a) = arc {
@@ -230,6 +241,7 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Wait-free, O(1)
+  #[inline(always)]
   pub fn store(&self, arc: Option<&Arc<T>>) {
     let new = 
       if let Some(a) = arc {
@@ -245,6 +257,7 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Wait-free, O(1)
+  #[inline(always)]
   pub fn swap_consume(&self, arc: Option<Arc<T>>) -> Option<Arc<T>> {
     let new =
       if let Some(a) = arc {
@@ -262,6 +275,7 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Wait-free, O(1)
+  #[inline(always)]
   pub fn swap(&self, arc: Option<&Arc<T>>) -> Option<Arc<T>> {
     let new =
       if let Some(a) = arc {
@@ -278,6 +292,7 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Lock-free
+  #[inline(always)]
   pub fn compare_and_set(&self, current: Option<&Arc<T>>, new_arc: Option<&Arc<T>>) -> bool {
     // Lock-free, not wait-free. If other threads change the reference count in the pointer,
     // this function needs to retry. There is no bound on how often this may happen.
@@ -440,6 +455,7 @@ fn release<const NULLABLE: bool, T>(value: usize) {
   ArcObject::rc_decrement(unsafe { NonNull::new_unchecked(ptr as *mut ArcObject<T>) }, weight);
 }
 
+#[inline(always)]
 fn release_to_arc<const NULLABLE: bool, T>(value: usize) -> Option<Arc<T>> {
   let (ptr, weight) = unpack::<T>(value);
   if NULLABLE && ptr.is_null() {
@@ -500,6 +516,7 @@ fn increase_weight<T>(value: &AtomicUsize, ptr: NonNull<ArcObject<T>>, weight: u
   ArcObject::rc_decrement_live(ptr, MAX_WEIGHT - weight);
 }
 
+#[inline(always)]
 fn pack<T>(ptr: *const ArcObject<T>, weight: usize) -> usize {
   // Store weight in most-significant bits,
   // pointer in least-significant bits.
@@ -512,9 +529,11 @@ fn pack<T>(ptr: *const ArcObject<T>, weight: usize) -> usize {
   ((ptr as usize & ptr_mask) >> FREE_BITS_LEAST_SIGNIFICANT)
     | (weight << (usize::BITS as usize - TAG_BITS))
 }
+#[inline(always)]
 fn pack_weight(weight: usize) -> usize {
   weight << (usize::BITS as usize - TAG_BITS)
 }
+#[inline(always)]
 fn unpack<T>(value: usize) -> (*const ArcObject<T>, usize) {
   let weight = value >> (usize::BITS as usize - TAG_BITS);
 
