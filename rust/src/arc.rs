@@ -203,14 +203,7 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
   }
 
   // Wait-free, O(P) with P the number of threads,
-  // if the tag is only updated O(1) times.
-  // O(1) if the weight remains less than DANGER_ZONE
-  // Updates to the tag (not the weight) will cause this function to retry,
-  // which may happen arbitrarily long if there are arbitrarily many updates to
-  // the tag. If the program does this, then this function is only lock-free.
-  // If the weight is updated at most a constant number of times, then this
-  // function is wait free. This is for instance the case if the tag is only
-  // changed from 0 to 1, but not the other way around.
+  // O(1) if the weight remains higher than MAX_WEIGHT.
   pub fn load(&self) -> (Option<Arc<T>>, usize) {
     let result = self.value.fetch_sub(pack_weight(1), Ordering::Acquire);
     let (ptr, weight, tag) = unpack::<T>(result);
@@ -228,6 +221,37 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
         }),
         tag
       )
+    }
+  }
+
+  pub fn fetch_and_update_tag<A, B, F: FnMut(usize) -> Result<(usize, A), B>>(&self, mut f: F) -> Result<(Option<Arc<T>>, A), B> {
+    // Similar to load(), but the fetch-and-add is now replaced by a compare-and-swap loop.
+    let mut observed = self.value.load(Ordering::Relaxed);
+    loop {
+      let (ptr, weight, observed_tag) = unpack::<T>(observed);
+      let (new_tag, result) = f(observed_tag)?;
+      let new = pack::<T>(ptr, weight - 1, new_tag);
+      match self.value.compare_exchange_weak(observed, new, Ordering::Acquire, Ordering::Relaxed) {
+        Ok(_) => {
+          if NULLABLE && ptr.is_null() {
+            return Ok((None, result));
+          } else {
+            let ptr_nonnull = unsafe { NonNull::new_unchecked(ptr as *mut ArcObject<T>) };
+            if weight - 1 < MAX_THREADS {
+              increase_weight(&self.value, ptr_nonnull, weight - 1, new_tag);
+            }
+            return Ok((
+              Some(Arc{
+                pointer: ptr_nonnull
+              }),
+              result
+            ));
+          }
+        },
+        Err(value) => {
+          observed = value; // Try again
+        }
+      }
     }
   }
 
@@ -352,12 +376,68 @@ impl<const NULLABLE: bool, T> ArcCellInternal<NULLABLE, T> {
       }
     }
   }
+
+  pub fn compare_and_swap_tag<const CHECK_TAG: bool>(&self, current: Option<&Arc<T>>, current_tag: usize, new_tag: usize) -> CompareAndSwapTag {
+    let mut did_increase_weight = false; 
+
+    let current_ptr =
+      if let Some(a) = current {
+        a.as_arc_ptr().as_ptr()
+      } else {
+        std::ptr::null()
+      };
+    let mut observed = self.value.load(Ordering::Acquire);
+    loop {
+      let (observed_ptr, observed_weight, observed_tag) = unpack(observed);
+      if observed_ptr != current_ptr || (CHECK_TAG && observed_tag != current_tag) {
+        if did_increase_weight && (!NULLABLE || !current_ptr.is_null()) {
+          ArcObject::rc_decrement_live(unsafe { NonNull::new_unchecked(current_ptr as *mut ArcObject<T>) }, MAX_WEIGHT - MAX_THREADS);
+        }
+        if observed_ptr != current_ptr {
+          return CompareAndSwapTag::DifferentPointer(observed_tag);
+        } else {
+          return CompareAndSwapTag::DifferentTag(observed_tag);
+        }
+      }
+      if observed_weight < MAX_THREADS && !did_increase_weight {
+        // Although not needed for correctness, we will increase the weight of
+        // this cell here. This will make load() wait-free:
+        // Updates to the weight will cause increase_weight(), helper function
+        // for load(), to retry in its CAS loop. By increasing the weight here,
+        // we allow increase_weight to exit.
+        ArcObject::rc_increment(unsafe { NonNull::new_unchecked(current_ptr as *mut ArcObject<T>) }, MAX_WEIGHT - MAX_THREADS);
+        did_increase_weight = true;
+      }
+      let new = pack(
+        current_ptr,
+        if observed_weight < MAX_THREADS { observed_weight + MAX_WEIGHT - MAX_THREADS } else { observed_weight },
+        new_tag
+      );
+      match self.value.compare_exchange_weak(observed, new, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {
+          return CompareAndSwapTag::Ok;
+        },
+        Err(value) => {
+          observed = value; // Try again
+        }
+      }
+    }
+  }
 }
 
 impl<const NULLABLE: bool, T> Drop for ArcCellInternal<NULLABLE, T> {
   fn drop(&mut self) {
     release::<NULLABLE, T>(self.value.load(Ordering::Relaxed));
   }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CompareAndSwapTag {
+  Ok,
+  // We can only return the tag, as we would need to change the weight to
+  // acquire an Arc to the observed object.
+  DifferentPointer(usize),
+  DifferentTag(usize)
 }
 
 pub struct ArcCell<T>(ArcCellInternal<false, T>);
@@ -378,6 +458,14 @@ impl<T> ArcCell<T> {
   pub fn load_with_tag(&self) -> (Arc<T>, usize) {
     let (arc, tag) = self.0.load();
     unsafe { (arc.unwrap_unchecked(), tag) }
+  }
+  pub fn fetch_and_update_tag<A, B, F: FnMut(usize) -> Result<(usize, A), B>>(&self, f: F) -> Result<(Arc<T>, A), B> {
+    match self.0.fetch_and_update_tag(f) {
+      Ok((arc, result)) => unsafe { 
+        Ok((arc.unwrap_unchecked(), result))
+      },
+      Err(err) => Err(err)
+    }
   }
   pub fn peek(&self) -> NonNull<ArcObject<T>> {
     unsafe {
@@ -430,6 +518,16 @@ impl<T> ArcCell<T> {
   pub fn compare_and_set_with_tag(&self, current: &Arc<T>, current_tag: usize, new: &Arc<T>, new_tag: usize) -> bool {
     self.0.compare_and_set::<true>(Some(current), current_tag, Some(new), new_tag)
   }
+  pub fn compare_and_swap_tag(&self, current: &Arc<T>, current_tag: usize, new_tag: usize) -> CompareAndSwapTag {
+    self.0.compare_and_swap_tag::<true>(Some(current), current_tag, new_tag)
+  }
+  // Sets the tag to the specified tag, if this cell refers to the given object.
+  pub fn set_tag(&self, current: &Arc<T>, new_tag: usize) -> bool {
+    match self.0.compare_and_swap_tag::<false>(Some(current), 0, new_tag) {
+      CompareAndSwapTag::Ok => true,
+      _ => false
+    }
+  }
 
   pub fn update<F: FnMut(&Arc<T>) -> Result<(Arc<T>, A), B>, A, B>(&self, mut f: F) -> Result<A, B> {
     loop {
@@ -480,6 +578,9 @@ impl<T> OptionalArcCell<T> {
   pub fn load_with_tag(&self) -> (Option<Arc<T>>, usize) {
     self.0.load()
   }
+  pub fn fetch_and_update_tag<A, B, F: FnMut(usize) -> Result<(usize, A), B>>(&self, f: F) -> Result<(Option<Arc<T>>, A), B> {
+    self.0.fetch_and_update_tag(f)
+  }
   pub fn peek(&self) -> *const ArcObject<T> {
     self.0.peek().0
   }
@@ -515,6 +616,16 @@ impl<T> OptionalArcCell<T> {
   }
   pub fn compare_and_set_with_tag(&self, current: Option<&Arc<T>>, current_tag: usize, new: Option<&Arc<T>>, new_tag: usize) -> bool {
     self.0.compare_and_set::<true>(current, current_tag, new, new_tag)
+  }
+  pub fn compare_and_swap_tag(&self, current: Option<&Arc<T>>, current_tag: usize, new_tag: usize) -> CompareAndSwapTag {
+    self.0.compare_and_swap_tag::<true>(current, current_tag, new_tag)
+  }
+  // Sets the tag to the specified tag, if this cell refers to the given object.
+  pub fn set_tag(&self, current: Option<&Arc<T>>, new_tag: usize) -> bool {
+    match self.0.compare_and_swap_tag::<false>(current, 0, new_tag) {
+      CompareAndSwapTag::Ok => true,
+      _ => false
+    }
   }
 
   pub fn update<F: FnMut(Option<&Arc<T>>) -> Result<(Option<Arc<T>>, A), B>, A, B>(&self, mut f: F) -> Result<A, B> {
