@@ -549,7 +549,7 @@ impl<T> OptionalArcCell<T> {
 
 #[inline(always)]
 fn release<const NULLABLE: bool, T>(value: usize) {
-  let (ptr, _, weight) = unpack::<T>(value);
+  let (ptr, weight, _) = unpack::<T>(value);
   if NULLABLE && ptr.is_null() {
     return;
   }
@@ -558,7 +558,7 @@ fn release<const NULLABLE: bool, T>(value: usize) {
 
 #[inline(always)]
 fn release_to_arc<const NULLABLE: bool, T>(value: usize) -> Option<Arc<T>> {
-  let (ptr, _, weight) = unpack::<T>(value);
+  let (ptr, weight, _) = unpack::<T>(value);
   if NULLABLE && ptr.is_null() {
     return None;
   }
